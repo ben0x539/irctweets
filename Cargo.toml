@@ -1,0 +1,16 @@
+[package]
+name = "irctweets"
+version = "0.1.0"
+authors = ["Benjamin Herr <ben@0x539.de>"]
+edition = "2018"
+
+[dependencies]
+irc = "0.13"
+structopt = { version = "0.2", features = [ "paw" ] }
+paw = "1.0"
+failure = "0.1.5"
+linkify = "0.4.0"
+rusqlite = "0.20.0"
+url = "2.1.0"
+tracing = "0.1.8"
+tracing-subscriber = "0.1.1"
