@@ -1,10 +1,11 @@
 use {
     std::{
-        path::PathBuf,
+        path::{Path, PathBuf},
+        fs,
         io,
     },
     irc::client::prelude::*,
-    failure::Error,
+    anyhow::{Result, anyhow},
     tracing::{trace, error, span, Level},
 };
 
@@ -12,8 +13,6 @@ use {
 struct Args {
     #[structopt(short, long, default_value = "irctweets.toml")]
     config: PathBuf,
-    #[structopt(short, long, default_value = "irctweets.sqlite")]
-    db: PathBuf,
 }
 
 struct App {
@@ -21,13 +20,28 @@ struct App {
     link_finder: linkify::LinkFinder,
 }
 
+#[derive(Debug, PartialEq, serde_derive::Deserialize)]
+struct Config {
+    db: PathBuf,
+    irc: irc::client::data::config::Config,
+}
+
+impl Config {
+    fn load<P: AsRef<Path>>(path: &P) -> Result<Config> {
+        let file_contents = fs::read_to_string(&path)?;
+        let mut config = toml::from_str(&file_contents)?;
+        Ok(config)
+    }
+}
+
 impl App {
-    fn init_db(&self) -> Result<(), Error> {
+    fn init_db(&self) -> Result<()> {
         self.db.execute("
             create table if not exists tweet (
                 id integer primary key,
                 tweet_id integer unique not null,
-                retweet_id integer
+                retweet_id integer,
+                error varchar
             )
         ", rusqlite::NO_PARAMS)?;
 
@@ -54,45 +68,49 @@ impl App {
     }
 
     fn handle_message(&self, _client: &IrcClient, message: &Message)
-            -> Result<(), Error> {
-        if let Message { command: Command::PRIVMSG(target, msg), ..} = message {
-            trace!(%target, %msg, "privmsg");
-            let mut maybe_line = None;
+            -> Result<()> {
+        let (target, msg) = match message {
+            Message { command: Command::PRIVMSG(target, msg), ..}
+               =>  (target, msg),
+            _ => return Ok(()),
+        };
 
-            for link in self.link_finder.links(&msg) {
-                let link = link.as_str();
-                let span = span!(Level::TRACE, "link", %link);
-                let _enter = span.enter();
-                trace!("link");
+        trace!(%target, %msg, "privmsg");
+        let mut maybe_line = None;
 
-                let tweet_id = match get_tweet(link) {
-                    Some(tweet_id) => tweet_id,
-                    None => continue,
-                };
-                trace!(%tweet_id);
+        for link in self.link_finder.links(&msg) {
+            let link = link.as_str();
+            let span = span!(Level::TRACE, "link", %link);
+            let _enter = span.enter();
+            trace!("link");
 
-                let line = match maybe_line {
-                    Some(line) => line,
-                    None => {
-                        let prefix = message.prefix.as_ref()
-                            .map(|s| &s[..]).unwrap_or("");
-                        let line =
-                            self.insert_line(prefix, &target, &msg)?;
-                        maybe_line = Some(line);
-                        line
-                    }
-                };
+            let tweet_id = match get_tweet(link) {
+                Some(tweet_id) => tweet_id,
+                None => continue,
+            };
+            trace!(%tweet_id);
 
-                let tweet = self.maybe_insert_tweet(tweet_id)?;
-                self.maybe_insert_occurence(line, tweet)?;
-            }
+            let line = match maybe_line {
+                Some(line) => line,
+                None => {
+                    let prefix = message.prefix.as_ref()
+                        .map(|s| &s[..]).unwrap_or("");
+                    let line =
+                        self.insert_line(prefix, &target, &msg)?;
+                    maybe_line = Some(line);
+                    line
+                }
+            };
+
+            let tweet = self.maybe_insert_tweet(tweet_id)?;
+            self.maybe_insert_occurence(line, tweet)?;
         }
 
         Ok(())
     }
 
     fn insert_line(&self, prefix: &str, target: &str, msg: &str)
-            -> Result<i64, Error> {
+            -> Result<i64> {
         self.db.execute("
             insert into line(timestamp, prefix, target, msg)
             values(datetime(), ?, ?, ?);
@@ -101,7 +119,7 @@ impl App {
         Ok(self.db.last_insert_rowid())
     }
 
-    fn maybe_insert_tweet(&self, tweet_id: i64) -> Result<i64, Error> {
+    fn maybe_insert_tweet(&self, tweet_id: i64) -> Result<i64> {
         self.db.execute("
             insert or ignore into tweet(tweet_id)
             values(?);
@@ -114,8 +132,7 @@ impl App {
         Ok(tweet)
     }
 
-    fn maybe_insert_occurence(&self, tweet: i64, line: i64)
-            -> Result<(), Error> {
+    fn maybe_insert_occurence(&self, tweet: i64, line: i64) -> Result<()> {
         self.db.execute("
             insert or ignore into occurence(tweet, line)
             values(?, ?);
@@ -148,18 +165,26 @@ fn get_tweet(url_str: &str) -> Option<i64> {
     Some(tweet_id)
 }
 
+fn r<T>(r: irc::error::Result<T>) -> Result<T> {
+    match r {
+        Ok(v) => Ok(v),
+        Err(e) => Err(anyhow!(e)),
+    }
+}
+
 #[paw::main]
-fn main(args: Args) -> Result<(), Error> {
+fn main(args: Args) -> Result<()> {
     let subscriber = tracing_subscriber::fmt::Subscriber::builder()
-        //.with_filter("attrs_basic=trace")
+        .with_max_level(Level::TRACE)
         .compact()
         .with_writer(io::stderr)
         .finish();
     tracing::subscriber::set_global_default(subscriber)?;
+    trace!(?args, "starting up");
 
     let config = Config::load(&args.config)?;
 
-    let db = rusqlite::Connection::open(&args.db)?;
+    let db = rusqlite::Connection::open(&config.db)?;
 
     let mut link_finder = linkify::LinkFinder::new();
     link_finder.kinds(&[linkify::LinkKind::Url]);
@@ -168,9 +193,9 @@ fn main(args: Args) -> Result<(), Error> {
 
     app.init_db()?;
 
-    let mut reactor = IrcReactor::new()?;
-    let client = reactor.prepare_client_and_connect(&config)?;
-    client.identify()?;
+    let mut reactor = r(IrcReactor::new())?;
+    let client = r(reactor.prepare_client_and_connect(&config.irc))?;
+    r(client.identify())?;
     reactor.register_client_with_handler(client, move |client, message| {
         let span = span!(Level::TRACE, "message", message = %message);
         let _enter = span.enter();
@@ -181,7 +206,7 @@ fn main(args: Args) -> Result<(), Error> {
         Ok(())
     });
 
-    reactor.run()?;
+    r(reactor.run())?;
 
     Ok(())
 }

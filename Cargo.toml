@@ -8,9 +8,12 @@ edition = "2018"
 irc = "0.13"
 structopt = { version = "0.2", features = [ "paw" ] }
 paw = "1.0"
-failure = "0.1.5"
+anyhow = "1.0"
 linkify = "0.4.0"
 rusqlite = "0.20.0"
 url = "2.1.0"
 tracing = "0.1.8"
 tracing-subscriber = "0.1.1"
+serde = { version = "1.0", features = ["derive"] }
+serde_derive = "1.0"
+toml = "0.5"

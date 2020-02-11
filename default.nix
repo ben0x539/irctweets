@@ -9,7 +9,7 @@ let
   rust-overlay = import "${nixpkgs-mozilla}/rust-overlay.nix";
   pkgs = import <nixpkgs> { overlays = [ rust-overlay ]; };
   nightly-rust = (pkgs.rustChannelOf {
-    date = "2019-09-07";
+    date = "2020-02-09";
     channel = "nightly";
   }).rust;
 in
