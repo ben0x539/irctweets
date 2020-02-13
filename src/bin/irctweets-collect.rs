@@ -6,7 +6,7 @@ use {
     },
     irc::client::prelude::*,
     anyhow::{Result, anyhow},
-    tracing::{trace, error, span, Level},
+    tracing::{trace, debug, info, error, span, Level},
 };
 
 #[derive(Debug, structopt::StructOpt)]
@@ -29,7 +29,7 @@ struct Config {
 impl Config {
     fn load<P: AsRef<Path>>(path: &P) -> Result<Config> {
         let file_contents = fs::read_to_string(&path)?;
-        let mut config = toml::from_str(&file_contents)?;
+        let config = toml::from_str(&file_contents)?;
         Ok(config)
     }
 }
@@ -88,7 +88,7 @@ impl App {
                 Some(tweet_id) => tweet_id,
                 None => continue,
             };
-            trace!(%tweet_id);
+            info!(%tweet_id, "found tweet id");
 
             let line = match maybe_line {
                 Some(line) => line,
@@ -119,20 +119,20 @@ impl App {
         Ok(self.db.last_insert_rowid())
     }
 
-    fn maybe_insert_tweet(&self, tweet_id: i64) -> Result<i64> {
+    fn maybe_insert_tweet(&self, tweet_id: u64) -> Result<i64> {
         self.db.execute("
             insert or ignore into tweet(tweet_id)
             values(?);
-        ", &[tweet_id])?;
+        ", &[tweet_id as i64])?;
 
         let tweet = self.db.query_row("
             select id from tweet where tweet_id = ?
-        ", &[tweet_id], |row| row.get(0))?;
+        ", &[tweet_id as i64], |row| row.get(0))?;
 
         Ok(tweet)
     }
 
-    fn maybe_insert_occurence(&self, tweet: i64, line: i64) -> Result<()> {
+    fn maybe_insert_occurence(&self, line: i64, tweet: i64) -> Result<()> {
         self.db.execute("
             insert or ignore into occurence(tweet, line)
             values(?, ?);
@@ -142,7 +142,7 @@ impl App {
     }
 }
 
-fn get_tweet(url_str: &str) -> Option<i64> {
+fn get_tweet(url_str: &str) -> Option<u64> {
     let url = url::Url::parse(url_str).ok()?;
 
     if url.scheme() != "https" { return None; }
@@ -175,12 +175,12 @@ fn r<T>(r: irc::error::Result<T>) -> Result<T> {
 #[paw::main]
 fn main(args: Args) -> Result<()> {
     let subscriber = tracing_subscriber::fmt::Subscriber::builder()
-        .with_max_level(Level::TRACE)
+        .with_max_level(Level::DEBUG)
         .compact()
         .with_writer(io::stderr)
         .finish();
     tracing::subscriber::set_global_default(subscriber)?;
-    trace!(?args, "starting up");
+    debug!(?args, "starting up");
 
     let config = Config::load(&args.config)?;
 
@@ -197,10 +197,10 @@ fn main(args: Args) -> Result<()> {
     let client = r(reactor.prepare_client_and_connect(&config.irc))?;
     r(client.identify())?;
     reactor.register_client_with_handler(client, move |client, message| {
-        let span = span!(Level::TRACE, "message", message = %message);
+        let span = span!(Level::TRACE, "message", %message);
         let _enter = span.enter();
         if let Err(e) = app.handle_message(client, &message) {
-            error!(%e, "couldn't handle message");
+            error!(%e, %message, "couldn't handle message");
         }
 
         Ok(())
