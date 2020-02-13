@@ -1,0 +1,23 @@
+# file path for tweet id storage
+db = "irctweets.sqlite"
+
+[irc]
+nickname = "my-cool-irc-nick"
+nick_password = "my-very-secret-password"
+alt_nicks = [ "my-slightly-less-cool-irc-nick" ]
+should_ghost = true
+
+channels = [ "#my-favorite-hangout" ]
+
+server = "irc.my-irc-server.org"
+use_ssl = false # do ircs have certs these days? idk!
+
+[twitter]
+# Create an app at https://developer.twitter.com/en/apps, then go to the
+# "Keys and tokens" tab for your new app, and grab:
+# "Consumer API keys"
+consumer_token = "..."
+consumer_token_secret = "..."
+# "Access token & access token secret" (generate them)
+access_token = "..."
+access_token_secret = "..."
