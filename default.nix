@@ -1,28 +1,4 @@
-let
-  pkgs' = import <nixpkgs> {};
-  nixpkgs-mozilla = pkgs'.fetchFromGitHub {
-    owner = "mozilla";
-    repo = "nixpkgs-mozilla";
-    rev = "e37160aaf4de5c4968378e7ce6fe5212f4be239f";
-    sha256 = "013hapfp76s87wiwyc02mzq1mbva2akqxyh37p27ngqiz0kq5f2n";
-  };
-  rust-overlay = import "${nixpkgs-mozilla}/rust-overlay.nix";
-  pkgs = import <nixpkgs> { overlays = [ rust-overlay ]; };
-  nightly-rust = (pkgs.rustChannelOf {
-    date = "2020-02-09";
-    channel = "nightly";
-  }).rust;
-in
+{ pkgs ? import ./nix/nixpkgs.nix }:
 
-with pkgs;
-
-mkShell {
-  buildInputs = [
-    sqlite
-    openssl
-  ];
-  nativeBuildInputs = [
-    nightly-rust
-    pkgconfig
-  ];
-}
+let cargoNix = pkgs.callPackage ./Cargo.nix {};
+in cargoNix.rootCrate.build
