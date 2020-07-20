@@ -13,14 +13,19 @@ in import sources.nixpkgs {
     overlays = [
       rustChannelsOverlay
       rustChannelsSrcOverlay
-      (self: super: {
-        # Replace "latest.rustChannels.stable" with the version of the rust tools that
-        # you would like. Look at the documentation of nixpkgs-mozilla for examples.
-        #
-        # NOTE: "rust" instead of "rustc" is not a typo: It will include more than needed
-        # but also the much needed "rust-std".
-        rustc = super.latest.rustChannels.nightly.rustc;
-        inherit (super.latest.rustChannels.nightly) cargo rust rust-fmt rust-std clippy;
-      })
+      (self: super: let
+          release = super.rustChannelOf {
+            date = "2020-02-09";
+            channel = "nightly";
+          };
+        in {
+          # Replace "latest.rustChannels.stable" with the version of the rust tools that
+          # you would like. Look at the documentation of nixpkgs-mozilla for examples.
+          #
+          # NOTE: "rust" instead of "rustc" is not a typo: It will include more than needed
+          # but also the much needed "rust-std".
+          rustc = release.rust;
+          inherit (release) cargo rust rust-fmt rust-std clippy;
+        })
     ];
   }
