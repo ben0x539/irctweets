@@ -1,3 +1,5 @@
+#![feature(type_ascription)]
+
 use {
     std::{
         path::{Path, PathBuf},
@@ -6,6 +8,7 @@ use {
     },
     irc::client::prelude::*,
     anyhow::{Result, anyhow},
+    tokio::{runtime::Runtime, stream::StreamExt},
     tracing::{trace, debug, info, error, span, Level},
 };
 
@@ -67,11 +70,13 @@ impl App {
         Ok(())
     }
 
-    fn handle_message(&self, _client: &IrcClient, message: &Message)
+    fn handle_message(&self, _client: &Client, message: &Message)
             -> Result<()> {
-        let (target, msg) = match message {
-            Message { command: Command::PRIVMSG(target, msg), ..}
-               =>  (target, msg),
+        let (prefix, target, msg) = match message {
+            Message {
+                prefix: Some(prefix),
+                command: Command::PRIVMSG(target, msg),
+            .. } =>  (prefix, target, msg),
             _ => return Ok(()),
         };
 
@@ -93,10 +98,8 @@ impl App {
             let line = match maybe_line {
                 Some(line) => line,
                 None => {
-                    let prefix = message.prefix.as_ref()
-                        .map(|s| &s[..]).unwrap_or("");
                     let line =
-                        self.insert_line(prefix, &target, &msg)?;
+                        self.insert_line(&prefix.to_string(), &target, &msg)?;
                     maybe_line = Some(line);
                     line
                 }
@@ -193,20 +196,21 @@ fn main(args: Args) -> Result<()> {
 
     app.init_db()?;
 
-    let mut reactor = r(IrcReactor::new())?;
-    let client = r(reactor.prepare_client_and_connect(&config.irc))?;
-    r(client.identify())?;
-    reactor.register_client_with_handler(client, move |client, message| {
-        let span = span!(Level::TRACE, "message", %message);
-        let _enter = span.enter();
-        if let Err(e) = app.handle_message(client, &message) {
-            error!(%e, %message, "couldn't handle message");
+    Runtime::new()?.block_on(async move {
+        let mut client = r(Client::from_config(config.irc.clone()).await)?;
+        r(client.identify())?;
+        let mut stream = r(client.stream())?;
+        while let Some(message) = r(stream.next().await.transpose())? {
+            let span = span!(Level::TRACE, "message", %message);
+            let _enter = span.enter();
+            if let Err(e) = app.handle_message(&client, &message) {
+                error!(%e, %message, "couldn't handle message");
+            }
         }
 
-        Ok(())
-    });
+        Ok(()): Result<()>
+    })?;
 
-    r(reactor.run())?;
 
     Ok(())
 }

@@ -6,11 +6,10 @@ use {
         fs,
         io,
         time,
-        thread,
     },
     anyhow::Result,
     rusqlite::types::ToSql,
-    tokio::runtime::current_thread::block_on_all,
+    tokio::time::delay_for,
     tracing::{span, trace, error, info, Level},
 };
 
@@ -104,7 +103,7 @@ impl App {
         Ok(())
     }
 
-    fn tick(&self) -> Result<()> {
+    async fn tick(&self) -> Result<()> {
         let tweet_ids = self.get_new_tweets(100)?;
         if tweet_ids.len() == 0 {
             return Ok(());
@@ -113,8 +112,8 @@ impl App {
         for tweet_id in tweet_ids {
             let span = span!(Level::INFO, "processing tweet", %tweet_id);
             let _enter = span.enter();
-            let result = block_on_all(
-                    egg_mode::tweet::retweet(tweet_id, &self.creds));
+            let result =
+                egg_mode::tweet::retweet(tweet_id, &self.creds).await;
             match result {
                 Ok(r) => {
                     let retweet = r.response;
@@ -130,19 +129,20 @@ impl App {
         Ok(())
     }
 
-    fn run(&self) -> Result<()> {
+    async fn run(&self) -> Result<()> {
         loop {
-            if let Err(e) = self.tick() {
+            if let Err(e) = self.tick().await {
                 error!(%e, "error during tick");
             }
 
-            thread::sleep(time::Duration::from_secs(5));
+            delay_for(time::Duration::from_secs(5)).await;
         }
     }
 }
 
 #[paw::main]
-fn main(args: Args) -> Result<()> {
+#[tokio::main]
+async fn main(args: Args) -> Result<()> {
     let subscriber = tracing_subscriber::fmt::Subscriber::builder()
         .with_max_level(Level::TRACE)
         .compact()
@@ -166,7 +166,7 @@ fn main(args: Args) -> Result<()> {
 
     app.init_db()?;
 
-    app.run()?;
+    app.run().await?;
 
     Ok(())
 }
