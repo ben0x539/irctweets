@@ -1,10 +1,11 @@
-#![feature(type_ascription)]
+#![feature(type_ascription, bindings_after_at)]
 
 use {
     std::{
-        path::{Path, PathBuf},
+        fmt::{Debug, Write},
         fs,
         io,
+        path::{Path, PathBuf},
     },
     irc::client::prelude::*,
     anyhow::{Result, anyhow},
@@ -21,11 +22,13 @@ struct Args {
 struct App {
     db: rusqlite::Connection,
     link_finder: linkify::LinkFinder,
+    help_msg: String,
 }
 
-#[derive(Debug, PartialEq, serde_derive::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde_derive::Deserialize)]
 struct Config {
     db: PathBuf,
+    help_msg: String,
     irc: irc::client::data::config::Config,
 }
 
@@ -70,15 +73,28 @@ impl App {
         Ok(())
     }
 
-    fn handle_message(&self, _client: &Client, message: &Message)
+    async fn handle_message(&self, client: &Client, message: &Message)
             -> Result<()> {
-        let (prefix, target, msg) = match message {
+        let (prefix, nick, target, msg) = match message {
             Message {
-                prefix: Some(prefix),
+                prefix: Some(prefix @ Prefix::Nickname(nick, ..)),
                 command: Command::PRIVMSG(target, msg),
-            .. } =>  (prefix, target, msg),
-            _ => return Ok(()),
+            .. } => (prefix, nick, target, msg),
+            _ => {
+                trace!(%message, "not interesting");
+                return Ok(());
+            }
         };
+
+        if let Some(c) = self.extract_command(client, target, nick, msg) {
+            self.handle_command(client, &c).await?;
+            return Ok(());
+        }
+
+        if target.starts_with('#') {
+            // don't retweet stuff from private messages
+            return Ok(());
+        }
 
         trace!(%target, %msg, "privmsg");
         let mut maybe_line = None;
@@ -143,6 +159,70 @@ impl App {
 
         Ok(())
     }
+
+    fn extract_command<'a, 'c>(&self, client: &'c Client, target: &'a str,
+            nick: &'a str, msg: &'a str) -> Option<ChatCommand<&'a str>> {
+        let msg = msg.trim();
+        let span =
+            span!(Level::TRACE, "extract_command", %target, %nick, %msg);
+        let _enter = span.enter();
+        if !target.starts_with('#') {
+            trace!("addressed_dm");
+            // we're in a dm, definitely someone talking to us
+            return Some(ChatCommand{
+                message: msg,
+                response_target: nick,
+                response_address: None,
+            })
+        }
+
+        // <someone> ournick: hey whats up
+        let me = client.current_nickname();
+        let directly_addressed =
+            msg.len() > me.len() + 1
+                && &msg[me.len()..][..1] == ":"
+                && msg.starts_with(me);
+
+        if directly_addressed {
+            trace!("addressed_channel");
+            let msg = msg[me.len()+1..].trim();
+            return Some(ChatCommand{
+                message: msg,
+                response_target: target,
+                response_address: Some(nick),
+            })
+        }
+
+        trace!("not_addressed");
+        None
+    }
+
+    async fn handle_command<S>(&self, client: &Client,
+            command: &ChatCommand<S>) -> Result<()>
+            where S: AsRef<str>+Debug {
+        let span =
+            span!(Level::TRACE, "handle_command", ?command);
+        let _enter = span.enter();
+        trace!("command");
+        if command.message.as_ref() == "help" {
+            trace!("command_help");
+            let mut msg = String::new();
+            if let Some(addr) = &command.response_address {
+                write!(msg, "{}: ", addr.as_ref())?;
+            }
+            write!(msg, "{}", self.help_msg)?;
+            client.send_privmsg(command.response_target.as_ref(), &msg)?;
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct ChatCommand<S: AsRef<str>+Debug> {
+    message: S,
+    response_target: S,
+    response_address: Option<S>,
 }
 
 fn get_tweet(url_str: &str) -> Option<u64> {
@@ -192,18 +272,20 @@ fn main(args: Args) -> Result<()> {
     let mut link_finder = linkify::LinkFinder::new();
     link_finder.kinds(&[linkify::LinkKind::Url]);
 
-    let app = App { db, link_finder };
+    let (irc_config, help_msg) = (config.irc, config.help_msg);
+
+    let app = App { db, link_finder, help_msg };
 
     app.init_db()?;
 
-    Runtime::new()?.block_on(async move {
-        let mut client = r(Client::from_config(config.irc.clone()).await)?;
+    Runtime::new()?.block_on(async {
+        let mut client = r(Client::from_config(irc_config).await)?;
         r(client.identify())?;
         let mut stream = r(client.stream())?;
         while let Some(message) = r(stream.next().await.transpose())? {
             let span = span!(Level::TRACE, "message", %message);
             let _enter = span.enter();
-            if let Err(e) = app.handle_message(&client, &message) {
+            if let Err(e) = app.handle_message(&client, &message).await {
                 error!(%e, %message, "couldn't handle message");
             }
         }
