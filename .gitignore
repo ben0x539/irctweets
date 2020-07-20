@@ -1,0 +1,5 @@
+/target
+**/*.rs.bk
+irctweets.sqlite
+irctweets.toml
+result
